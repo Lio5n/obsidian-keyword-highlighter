@@ -11,9 +11,14 @@ type NewDecoration = { from: number; to: number; decoration: Decoration };
 export class EditorHighlighter implements PluginValue {
   decorations: DecorationSet;
   unsubscribe: () => void;
+  intervalId?: NodeJS.Timeout; // ⏰ 用于保存定时器ID
+  lastDateStr: string; // 记录上次的日期字符串
 
   constructor(view: EditorView) {
+    this.lastDateStr = this.getTodayString();
     this.decorations = this.buildDecorations(view);
+
+    // 🧩 订阅设置变化，当关键字或样式改变时自动更新
     this.unsubscribe = settingsStore.subscribe(() => {
       setTimeout(() => {
         try {
@@ -26,6 +31,16 @@ export class EditorHighlighter implements PluginValue {
         }
       }, 0);
     });
+
+    // 🕒 每5分钟检查一次日期是否变化，若跨天则重新构建高亮
+    this.intervalId = setInterval(() => {
+      const newDateStr = this.getTodayString();
+      if (newDateStr !== this.lastDateStr) {
+        this.lastDateStr = newDateStr;
+        this.decorations = this.buildDecorations(view);
+        view.requestMeasure();
+      }
+    }, 5 * 60 * 1000); // 5分钟
   }
 
   update(update: ViewUpdate): void {
@@ -36,6 +51,16 @@ export class EditorHighlighter implements PluginValue {
 
   destroy(): void {
     this.unsubscribe();
+    if (this.intervalId) clearInterval(this.intervalId);
+  }
+
+  // 🔧 生成当天日期字符串 (YYYY-MM-DD)
+  getTodayString(): string {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   buildDecorations(view: EditorView): DecorationSet {
@@ -44,7 +69,21 @@ export class EditorHighlighter implements PluginValue {
 
     const settings = get(settingsStore);
 
-    settings.keywords.filter((keyword) => !!keyword.keyword).forEach((k) => newDecorations.push(...this.buildDecorationsForKeyword(view, k)));
+    // 🧠 遍历所有关键字
+    settings.keywords
+      .filter((keyword) => !!keyword.keyword)
+      .forEach((k) => {
+        let keywordToUse = k.keyword;
+
+        // 🪄 当关键字是 "TODAY" 时，用当天日期替换
+        if (keywordToUse.toUpperCase() === 'TODAY') {
+          keywordToUse = this.getTodayString();
+        }
+
+        newDecorations.push(...this.buildDecorationsForKeyword(view, { ...k, keyword: keywordToUse }));
+      });
+
+    // 排序+合并
     newDecorations.sort((a, b) => a.from - b.from);
     newDecorations.forEach((d) => builder.add(d.from, d.to, d.decoration));
 
