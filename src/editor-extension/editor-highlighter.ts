@@ -11,14 +11,21 @@ type NewDecoration = { from: number; to: number; decoration: Decoration };
 export class EditorHighlighter implements PluginValue {
   decorations: DecorationSet;
   unsubscribe: () => void;
-  intervalId?: NodeJS.Timeout; // ⏰ 用于保存定时器ID
-  lastDateStr: string; // 记录上次的日期字符串
+  intervalId?: NodeJS.Timeout;
+  lastDateStr: string;
+
+  // 🗓 可扩展日期关键字映射表
+  dateKeywordMap: Record<string, () => string> = {
+    TODAY: () => this.getTodayString(),
+    YESTERDAY: () => this.getRelativeDate(-1),
+    // 可以继续添加新关键字，例如:
+    // TOMORROW: () => this.getRelativeDate(1),
+  };
 
   constructor(view: EditorView) {
     this.lastDateStr = this.getTodayString();
     this.decorations = this.buildDecorations(view);
 
-    // 🧩 订阅设置变化，当关键字或样式改变时自动更新
     this.unsubscribe = settingsStore.subscribe(() => {
       setTimeout(() => {
         try {
@@ -32,7 +39,6 @@ export class EditorHighlighter implements PluginValue {
       }, 0);
     });
 
-    // 🕒 每5分钟检查一次日期是否变化，若跨天则重新构建高亮
     this.intervalId = setInterval(() => {
       const newDateStr = this.getTodayString();
       if (newDateStr !== this.lastDateStr) {
@@ -40,7 +46,7 @@ export class EditorHighlighter implements PluginValue {
         this.decorations = this.buildDecorations(view);
         view.requestMeasure();
       }
-    }, 5 * 60 * 1000); // 5分钟
+    }, 5 * 60 * 1000);
   }
 
   update(update: ViewUpdate): void {
@@ -54,13 +60,17 @@ export class EditorHighlighter implements PluginValue {
     if (this.intervalId) clearInterval(this.intervalId);
   }
 
-  // 🔧 生成当天日期字符串 (YYYY-MM-DD)
+  // 🔧 当天日期
   getTodayString(): string {
     const today = new Date();
-    const year = today.getFullYear();
-    const month = String(today.getMonth() + 1).padStart(2, '0');
-    const day = String(today.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  }
+
+  // 🔧 相对日期，例如 -1 = 昨天, 1 = 明天
+  getRelativeDate(offset: number): string {
+    const date = new Date();
+    date.setDate(date.getDate() + offset);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
   }
 
   buildDecorations(view: EditorView): DecorationSet {
@@ -69,21 +79,18 @@ export class EditorHighlighter implements PluginValue {
 
     const settings = get(settingsStore);
 
-    // 🧠 遍历所有关键字
-    settings.keywords
-      .filter((keyword) => !!keyword.keyword)
-      .forEach((k) => {
-        let keywordToUse = k.keyword;
+    settings.keywords.filter((k) => !!k.keyword).forEach((k) => {
+      let keywordToUse = k.keyword;
 
-        // 🪄 当关键字是 "TODAY" 时，用当天日期替换
-        if (keywordToUse.toUpperCase() === 'TODAY') {
-          keywordToUse = this.getTodayString();
-        }
+      // 🪄 如果关键字在 dateKeywordMap 中，则用对应函数结果替换
+      const mapFn = this.dateKeywordMap[keywordToUse.toUpperCase()];
+      if (mapFn) {
+        keywordToUse = mapFn();
+      }
 
-        newDecorations.push(...this.buildDecorationsForKeyword(view, { ...k, keyword: keywordToUse }));
-      });
+      newDecorations.push(...this.buildDecorationsForKeyword(view, { ...k, keyword: keywordToUse }));
+    });
 
-    // 排序+合并
     newDecorations.sort((a, b) => a.from - b.from);
     newDecorations.forEach((d) => builder.add(d.from, d.to, d.decoration));
 
@@ -92,7 +99,7 @@ export class EditorHighlighter implements PluginValue {
 
   buildDecorationsForKeyword(view: EditorView, keyword: KeywordStyle): NewDecoration[] {
     const newDecorations: NewDecoration[] = [];
-    const cursor = new SearchCursor(view.state.doc, `${keyword.keyword}`);
+    const cursor = new SearchCursor(view.state.doc, keyword.keyword);
     cursor.next();
     while (!cursor.done) {
       newDecorations.push({
